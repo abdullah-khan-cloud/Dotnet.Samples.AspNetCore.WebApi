@@ -1,198 +1,34 @@
-# Building, testing, and publishing .NET releases
-# https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-net
+---
+name: Dotnet Application
 
-name: .NET CD
-
-on:
-  push:
-    tags:
-      - "v*.*.*-*"
-
-env:
-  DOTNET_VERSION: 10.0.x
-  PACKAGE_NAME: nanotaboada/dotnet-samples-aspnetcore-webapi
+on: 
+   push:
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up .NET ${{ env.DOTNET_VERSION }}
-        uses: actions/setup-dotnet@v6.0.0
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-          cache: true
-          cache-dependency-path: |
-            src/Dotnet.Samples.AspNetCore.WebApi/packages.lock.json
-            test/Dotnet.Samples.AspNetCore.WebApi.Tests/packages.lock.json
-
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Build projects (Release configuration)
-        run: dotnet build --configuration Release --no-restore
-
-      - name: Run tests
-        run: dotnet test --configuration Release --no-build --verbosity normal
-
-  release:
-    needs: test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
-      id-token: write
-      attestations: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Verify tag commit is reachable from master
-        run: |
-          if ! git merge-base --is-ancestor ${{ github.sha }} origin/master; then
-            echo "❌ Error: Tag commit ${{ github.sha }} is not reachable from origin/master"
-            echo "Ensure the PR is merged to master before pushing a release tag"
-            exit 1
-          fi
-          echo "✅ Verified: commit is reachable from master"
-
-      - name: Extract version from tag
-        id: version
-        run: |
-          TAG_NAME=${GITHUB_REF#refs/tags/}
-
-          # Extract semver (e.g., v1.0.0-azteca -> 1.0.0)
-          SEMVER=$(echo $TAG_NAME | sed -E 's/^v([0-9]+\.[0-9]+\.[0-9]+)-.*/\1/')
-
-          # Extract stadium name (e.g., v1.0.0-azteca -> azteca)
-          STADIUM=$(echo $TAG_NAME | sed -E 's/^v[0-9]+\.[0-9]+\.[0-9]+-//')
-
-          # Validate semver format (X.Y.Z)
-          if ! echo "$SEMVER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "❌ Error: Invalid semantic version '$SEMVER' extracted from tag '$TAG_NAME'"
-            echo "Expected format: v{MAJOR}.{MINOR}.{PATCH}-{STADIUM} (e.g., v1.0.0-azteca)"
-            exit 1
-          fi
-
-          # Valid stadium names (A-Z from CHANGELOG.md)
-          VALID_STADIUMS="azteca bernabeu centenario dusseldorf ekaterinburg frankfurt gelsenkirchen hardrock ibnbatouta johannesburg kazan lusail maracana nantes olympiastadion parcdesprinces qatar974 rosebowl sansiro toronto ullevi volgograd wembley xiamen yokohama zentralstadion"
-
-          # Validate stadium name against the list
-          if [ -z "$STADIUM" ]; then
-            echo "❌ Error: Stadium name is empty in tag '$TAG_NAME'"
-            echo "Expected format: v{MAJOR}.{MINOR}.{PATCH}-{STADIUM} (e.g., v1.0.0-azteca)"
-            exit 1
-          fi
-
-          if ! echo "$VALID_STADIUMS" | grep -qw "$STADIUM"; then
-            echo "❌ Error: Invalid stadium name '$STADIUM' in tag '$TAG_NAME'"
-            echo "Valid stadiums (A-Z): $VALID_STADIUMS"
-            echo "See CHANGELOG.md for the complete list"
-            exit 1
-          fi
-
-          # Export validated outputs
-          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
-          echo "semver=$SEMVER" >> $GITHUB_OUTPUT
-          echo "stadium=$STADIUM" >> $GITHUB_OUTPUT
-
-          echo "📦 Release version: $SEMVER"
-          echo "🏟️ Stadium name: $STADIUM"
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.4.1
-
-      - name: Build and push Docker image to GitHub Container Registry
-        id: push
-        uses: docker/build-push-action@v7.4.0
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: |
-            ghcr.io/${{ env.PACKAGE_NAME }}:latest
-            ghcr.io/${{ env.PACKAGE_NAME }}:${{ steps.version.outputs.semver }}
-            ghcr.io/${{ env.PACKAGE_NAME }}:${{ steps.version.outputs.stadium }}
-
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4.2.2
-        with:
-          subject-name: ghcr.io/${{ env.PACKAGE_NAME }}
-          subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
-
-      - name: Generate changelog
-        id: changelog
-        run: |
-          # Get previous tag
-          PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-' | sed -n '2p')
-
-          if [ -z "$PREVIOUS_TAG" ]; then
-            echo "📝 First release - no previous tag found"
-            CHANGELOG="No changes (first release)"
-          else
-            echo "📝 Generating changelog from $PREVIOUS_TAG to ${{ steps.version.outputs.tag_name }}"
-            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges ${PREVIOUS_TAG}..${{ steps.version.outputs.tag_name }})
-
-            if [ -z "$CHANGELOG" ]; then
-              CHANGELOG="No new changes since $PREVIOUS_TAG"
-            fi
-          fi
-
-          # Set output for use in release body
-          {
-            echo "changelog<<EOF"
-            echo "$CHANGELOG"
-            echo "EOF"
-          } >> $GITHUB_OUTPUT
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3.0.3
-        with:
-          name: "v${{ steps.version.outputs.semver }} - ${{ steps.version.outputs.stadium }} 🏟️"
-          tag_name: ${{ steps.version.outputs.tag_name }}
-          body: |
-            # Release ${{ steps.version.outputs.semver }} - ${{ steps.version.outputs.stadium }} 🏟️
-
-            ## Docker Images
-
-            Pull this release using any of the following tags:
-
-            ```bash
-            # By semantic version (recommended)
-            docker pull ghcr.io/${{ env.PACKAGE_NAME }}:${{ steps.version.outputs.semver }}
-
-            # By stadium name
-            docker pull ghcr.io/${{ env.PACKAGE_NAME }}:${{ steps.version.outputs.stadium }}
-
-            # Latest
-            docker pull ghcr.io/${{ env.PACKAGE_NAME }}:latest
-            ```
-
-            ## Changes
-
-            ${{ steps.changelog.outputs.changelog }}
-
-            ---
-
-            📦 **Package:** [ghcr.io/${{ env.PACKAGE_NAME }}](https://github.com/${{ github.repository }}/pkgs/container/dotnet-samples-aspnetcore-webapi)
-          draft: false
-          prerelease: false
-          generate_release_notes: true
+    building:
+        runs-on: ubuntu-latest
+        steps:
+          - name: retrieving the code on runner
+            uses: actions/checkout@v5
+          - name: Initializing the CodeQL
+            uses: github/codeql-action/init@v4
+            with:
+                languages: c#
+          - name: resolve and download the dependencies 
+            run: dotnet restore -c release
+          - name: build the Application
+            run: dotnet build - c release --no-restore
+          - name: test the Application
+            run: dotnet test -c release --no-restore --no-build
+          - name: publish the Application
+            run: dotnet publish -c release --no-restore --no-build -o ./published/
+          - name: zip the Application
+            run: tar -cvzf dotnet.app.tar.gz ./published/
+          - name: analyze the CodeQL 
+            uses: github/codeql-action/analyze@v4
+          - name: publish the test results
+            if: ${{always()}}
+            uses: EnricoMi/publish-unit-test-result-action@v2
+            with:
+                  files: "**/TestResults/**/*.trx"
+                  comment_mode: always
