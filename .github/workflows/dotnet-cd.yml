@@ -3,6 +3,7 @@ name: Dotnet Application
 
 on: 
    push:
+    
 
 jobs:
     building:
