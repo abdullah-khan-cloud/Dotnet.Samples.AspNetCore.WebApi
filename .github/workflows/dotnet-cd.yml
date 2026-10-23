@@ -3,7 +3,7 @@ name: Dotnet Application
 
 on: 
    push:
-    
+
 
 jobs:
     building:
@@ -14,13 +14,13 @@ jobs:
           - name: Initializing the CodeQL
             uses: github/codeql-action/init@v4
             with:
-                languages: c#
+                languages: csharp
           - name: resolve and download the dependencies 
-            run: dotnet restore -c release
+            run: dotnet restore
           - name: build the Application
-            run: dotnet build - c release --no-restore
+            run: dotnet build -c release --no-restore
           - name: test the Application
-            run: dotnet test -c release --no-restore --no-build
+            run: dotnet test -c release --no-restore --no-build --logger "trx;LogFileName=test-results.trx" --results-directory ./TestResults
           - name: publish the Application
             run: dotnet publish -c release --no-restore --no-build -o ./published/
           - name: zip the Application
